@@ -1,0 +1,30 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>TimeWindow - Frontend Test</title>
+</head>
+<body>
+    <h1>TimeWindow Frontend</h1>
+
+    <button id="btnCheck">測試 API 連線</button>
+
+    <p id="result">尚未測試</p>
+
+    <script>
+        document.getElementById('btnCheck').addEventListener('click', () => {
+            fetch('http://localhost:5279/health')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('result').innerText =
+                        'API 狀態：' + data.status;
+                })
+                .catch(err => {
+                    document.getElementById('result').innerText =
+                        '連線失敗';
+                    console.error(err);
+                });
+        });
+    </script>
+</body>
+</html>

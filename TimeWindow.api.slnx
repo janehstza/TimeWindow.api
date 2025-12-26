@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/TimeWindow.frontend/">
+    <File Path="index.html" />
+  </Folder>
+  <Project Path="TimeWindow.api/TimeWindow.api.csproj" />
+</Solution>
