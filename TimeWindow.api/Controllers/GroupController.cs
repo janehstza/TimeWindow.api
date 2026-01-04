@@ -1,40 +1,24 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using System.Text.RegularExpressions;
 using TimeWindow.api.App.Models;
 using TimeWindow.api.App.Store;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace TimeWindow.api.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    public class GroupController : ControllerBase
+    public partial class GroupController : ControllerBase
     {
         private static InMemoryStore _store = new InMemoryStore();
-
-        public class CreateGroupRequest
-        {
-            public int TargetCount { get; set; }
-        }
-
-        public class JoinGroupRequest
-        {
-            public string InviteCode { get; set; } = "";
-            public string DisplayName { get; set; } = "";
-        }
-
-        public class UpsertPreferenceRequest
-        {
-            public int? BudgetMin { get; set; }
-            public int? BudgetMax { get; set; }
-            public int? HotelRating { get; set; }
-            public bool Transfer { get; set; }
-            public string PlacesToGo { get; set; } = "";
-        }
 
         [HttpPost]
         public IActionResult CreateGroup([FromBody] CreateGroupRequest request)
         {
             var group = _store.CreateGroup(request.TargetCount);
+            group.TravelDays = request.TravelDays;
+            group.DateStart = request.DateStart ?? DateOnly.FromDateTime(DateTime.Today);
+            group.DateEnd = request.DateEnd ?? group.DateStart.AddDays(30);
+
             return Ok(group);
         }
 
@@ -45,16 +29,12 @@ namespace TimeWindow.api.Controllers
             return Ok(participant);
         }
 
-        [HttpGet("{id}")]
-        public IActionResult GetGroupStatus(Guid id)
+        [HttpGet("{groupId}")]
+        public IActionResult GetGroupStatus(Guid groupId)
         {
-            var group = _store.GetGroup(id);
-            if (group == null)
-            {
-                return NotFound();
-            }
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
 
-            var joinedCount = _store.GetJoinedCount(id);
+            var joinedCount = _store.GetJoinedCount(groupId);
             return Ok(new
             {
                 groupId = group.GroupId,
@@ -65,32 +45,21 @@ namespace TimeWindow.api.Controllers
             });
         }
 
-        [HttpGet("{id}/me/status")]
-        public IActionResult GetMyStatus(Guid id, [FromQuery] string displayName)
+        [HttpGet("{groupId}/me/status")]
+        public IActionResult GetMyStatus(Guid groupId, [FromQuery] string? displayName)
         {
-            var group = _store.GetGroup(id);
-            if (group == null)
-            {
-                return NotFound();
-            }
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!EnsureMember(groupId, displayName, out var memberErr)) return memberErr;
 
-            if (string.IsNullOrWhiteSpace(displayName))
-            {
-                return BadRequest(new { message = "displayName is required" });
-            }
 
-            if (!_store.IsMember(id, displayName))
-            {
-                return StatusCode(403);
-            }
+            var joinedCount = _store.GetJoinedCount(groupId);
+            var submittedCount = _store.GetSubmittedCount(groupId);
 
-            var joinedCount = _store.GetJoinedCount(id);
-            var submittedCount = _store.GetSubmittedCount(id);
-
-            var hasPreferences = _store.HasPreferences(id, displayName);
-            var hasBusyCalendar = _store.HasBusyCalendar(id, displayName);
-            var hasSelectedTimeRange = _store.HasSelectedTimeRange(id, displayName);
-            var isSubmitted = _store.IsSubmitted(id, displayName);
+            var hasPreferences = _store.HasPreferences(groupId, displayName);
+            var hasBusyCalendar = _store.HasBusyCalendar(groupId, displayName);
+            var hasSelectedTimeRange = _store.HasAvailableSlots(groupId, displayName);
+            var isSubmitted = _store.IsSubmitted(groupId, displayName);
 
             return Ok(new
             {
@@ -108,74 +77,49 @@ namespace TimeWindow.api.Controllers
                 isSubmitted
             });
         }
-        [HttpPut("{id}/preferences")]
-        public IActionResult UpsertPreferences(Guid id, [FromQuery] string displayName, [FromBody] UpsertPreferenceRequest request)
+        [HttpPut("{groupId}/preferences")]
+        public IActionResult UpsertPreferences([FromRoute] Guid groupId, [FromQuery] string? displayName, [FromBody] UpsertPreferenceRequest request)
         {
-            var group = _store.GetGroup(id);
-            if (group == null)
-            {
-                return NotFound();
-            }
-            if (string.IsNullOrWhiteSpace(displayName))
-            {
-                return BadRequest(new { message = "displayName is required" });
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!EnsureMember(groupId, displayName, out var memberErr)) return memberErr;
 
-            }
-            if (!_store.IsMember(id, displayName)) return Forbid();
-
-            if (_store.IsSubmitted(id, displayName))
+            if (_store.IsSubmitted(groupId, displayName))
             {
-                return Conflict(new { message = "提交已鎖定，全員提交後將自動生成結果" });
+                return Conflict(new { message = "submissions are locked" });
             }
-            var pref = _store.UpsertPreference(id, displayName, request.BudgetMin, request.BudgetMax, request.HotelRating, request.Transfer, request.PlacesToGo);
+            var pref = _store.UpsertPreference(groupId, displayName, request.BudgetMin, request.BudgetMax, request.HotelRating, request.Transfer, request.PlacesToGo);
             return Ok(pref);
 
         }
 
-        [HttpGet("{id}/preferences")]
-        public IActionResult GetPreference(Guid id, [FromQuery] string displayName)
+        [HttpGet("{groupId}/preferences")]
+        public IActionResult GetPreference(Guid groupId, [FromQuery] string? displayName)
         {
-            var group = _store.GetGroup(id);
-            if (group == null)
-            {
-                return NotFound();
-            }
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!EnsureMember(groupId, displayName, out var memberErr)) return memberErr;
 
-            if (string.IsNullOrWhiteSpace(displayName))
-            {
-                return BadRequest(new { message = "displayName is required" });
-
-            }
-            if (!_store.IsMember(id, displayName)) return Forbid();
-            var pref = _store.GetPreference(id, displayName);
+            var pref = _store.GetPreference(groupId, displayName);
             if (pref == null)
             {
-                return NotFound();
+                return NotFound(new { message = "preference not found" });
             }
             return Ok(pref);
         }
-        public class BusySlotRequest
-        {
-            public DateTime StartAt { get; set; }
-            public DateTime EndAt { get; set; }
-        }
+        
         [HttpPost("{groupId}/busy")]
-        public IActionResult AddBusySlot(Guid groupId, [FromQuery] string displayName, [FromBody] BusySlotRequest req)
+        public IActionResult AddBusySlot(Guid groupId, [FromQuery] string? displayName, [FromBody] BusySlotRequest req)
         {
 
 
-            if (string.IsNullOrWhiteSpace(displayName))
-            {
-                return BadRequest(new { message = "displayName is required" });
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!EnsureMember(groupId, displayName, out var memberErr)) return memberErr;
 
-            }
             if (req.EndAt <= req.StartAt) return BadRequest();
 
-            var group = _store.GetGroup(groupId);
-            if (group == null) return NotFound();
-
-            if (!_store.IsMember(groupId, displayName)) return StatusCode(403);
-
+            
             var pref = _store.HasPreferences(groupId, displayName);
             if (!pref) return BadRequest(new { message = "preferences required" });
 
@@ -185,16 +129,11 @@ namespace TimeWindow.api.Controllers
         }
 
         [HttpGet("{groupId}/busy")]
-        public IActionResult GetBusySlots([FromRoute] Guid groupId, [FromQuery] string displayName)
+        public IActionResult GetBusySlots([FromRoute] Guid groupId, [FromQuery] string? displayName)
         {
-            if (string.IsNullOrWhiteSpace(displayName)) return BadRequest(new { message = "displayName is required" });
-            var group = _store.GetGroup(groupId);
-            if (group == null)
-            {
-                return NotFound();
-            }
-
-            if (!_store.IsMember(groupId, displayName)) return StatusCode(403);
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!EnsureMember(groupId, displayName, out var memberErr)) return memberErr;
 
             return Ok(_store.GetBusySlot(groupId, displayName));
         }
@@ -202,39 +141,139 @@ namespace TimeWindow.api.Controllers
 
 
         [HttpGet("{groupId}/available")]
-        public IActionResult GetAvailableSlots([FromRoute] Guid groupId, [FromQuery] string displayName)
+        public IActionResult GetAvailableSlots([FromRoute] Guid groupId, [FromQuery] string? displayName)
         {
-            if (string.IsNullOrWhiteSpace(displayName)) return BadRequest(new { message = "displayName is required" });
-            var group = _store.GetGroup(groupId);
-            if (group == null)
-            {
-                return NotFound();
-            }
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!EnsureMember(groupId, displayName, out var memberErr)) return memberErr;
 
-            if (!_store.IsMember(groupId, displayName)) return StatusCode(403);
-
-            return Ok(Array.Empty<string>());
+            return Ok(_store.GetAvailableSlots(groupId, displayName));
         }
 
         [HttpPost("{groupId}/available")]
-        public IActionResult SubmitAvailableSlots([FromRoute] Guid groupId, [FromQuery] string displayName, [FromBody] List<BusySlotRequest> slots)
+        public IActionResult SubmitAvailableSlots([FromRoute] Guid groupId, [FromQuery] string? displayName, [FromBody] List<AvailableSlotInput> slots)
         {
-            if (string.IsNullOrWhiteSpace(displayName)) return BadRequest(new { message = "displayName is required" });
-            var group = _store.GetGroup(groupId);
-            if (group == null)
-            {
-                return NotFound();
-            }
-
-            if (!_store.IsMember(groupId, displayName)) return StatusCode(403);
-
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!EnsureMember(groupId, displayName, out var memberErr)) return memberErr;
+            
+            
             if (slots == null || slots.Count == 0) return BadRequest(new { message = "slots required" });
 
             if (slots.Any(s => s.EndAt <= s.StartAt))
-                return BadRequest(new { message = "無效的日期"});
+                return BadRequest(new { message = "invalid time range" });
+            if (_store.IsSubmitted(groupId, displayName))
+                return Conflict(new { message = "already submitted" });
 
-            return Ok(new { count = slots.Count });
 
+            var toSave = new List<AvailableSlot>();
+            foreach (var s in slots)
+            {
+                toSave.Add(new AvailableSlot
+                {
+                    GroupId = groupId,
+                    DisplayName = displayName,
+                    StartAt = s.StartAt,
+                    EndAt = s.EndAt
+                });
+            }
+
+            _store.SetAvailableSlots(groupId, displayName, toSave);
+
+            _store.MarkSubmitted(groupId, displayName);
+
+            return Ok(toSave);
+        }
+
+        [HttpGet("{groupId}/common-options")]
+        public IActionResult GetCommonTimeRanges([FromRoute] Guid groupId, [FromQuery] string? displayName, [FromQuery] int travelDays = 1)
+        {
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            if (!RequireDisplayName(displayName, out var err)) return err;
+
+            var submittedCount = _store.GetSubmittedCount(groupId);
+            var targetCount = group.TargetCount;
+            if (submittedCount != targetCount) return StatusCode(409, new { message = "not ready" });
+
+            return Ok(ComputeCommonOptionsV2(groupId));
+        }
+
+
+        private List<CommonTimeRangeDto> ComputeCommonOptionsV2(Guid groupId)
+        {
+            var group = _store.GetGroup(groupId);
+
+            int n = group.TargetCount;
+            int threshold = n / 2 + 1;
+            var minDays = group.TravelDays;
+
+
+            var slots = _store.GetAvailableSlots(groupId).ToList();
+            if (slots.Count == 0) return new List<CommonTimeRangeDto>();
+            var start = DateOnly.FromDateTime(slots.Min(s => s.StartAt));
+            var end = DateOnly.FromDateTime(slots.Max(s => s.EndAt));
+
+            var dayCount = new Dictionary<DateOnly, int>();
+            foreach (var s in slots)
+            {
+                var slotStart = DateOnly.FromDateTime(s.StartAt) < group.DateStart ? group.DateStart : DateOnly.FromDateTime(s.StartAt);
+                var slotEnd = DateOnly.FromDateTime(s.EndAt) > group.DateEnd ? group.DateEnd : DateOnly.FromDateTime(s.EndAt);
+                for (var d = slotStart; d <= slotEnd; d = d.AddDays(1))
+                    dayCount[d] = dayCount.TryGetValue(d, out var c) ? c + 1 : 1;
+            }
+
+            var goodDays = dayCount.Where(kv => kv.Value >= threshold).Select(kv => kv.Key).OrderBy(d => d).ToList();
+            var ranges = new List<CommonTimeRangeDto>();
+            for (int i = 0; i < goodDays.Count; i++) 
+            { 
+                var a = goodDays[i]; while (i + 1 < goodDays.Count && 
+                    goodDays[i + 1] == goodDays[i].AddDays(1)) i++;
+                if (goodDays[i].DayNumber - a.DayNumber + 1 >= minDays) ranges.Add(new CommonTimeRangeDto(a, goodDays[i], goodDays[i].DayNumber - a.DayNumber +1));
+
+            }
+            _store.SaveCommonOptions(groupId, ranges);
+            return ranges;
+
+        }
+
+        [HttpGet("{groupId}/common-options/snapshot")]
+        public IActionResult GetSnapshots([FromRoute] Guid groupId, [FromQuery] string? displayName)
+        {
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+
+            return Ok(_store.GetCommonOptionsSnapshot(groupId));
+        }
+
+        [HttpGet("{groupId}/options/snapshot")]
+        public IActionResult GetOptionCardsSnapshot([FromRoute] Guid groupId, [FromQuery] string? displayName)
+        {
+            if (!RequireDisplayName(displayName, out var err)) return err;
+            if (!TryGetGroup(groupId, out var group, out var groupErr)) return groupErr;
+            
+            var snap = _store.GetCommonOptionsSnapshot(groupId);
+            if(snap.Count == 0 ) return StatusCode(409, new { message = "common options not ready" });
+
+            var places = _store.GetDistinctPlacesToGo(groupId);
+            if (places.Count == 0 ) return StatusCode(409, new { message = "places not ready" });
+
+            var cards = new List<OptionCardDto>();
+            foreach (var r in snap)
+            {
+                foreach (var p in places)
+                {
+                    cards.Add(new OptionCardDto
+                    {
+                        OptionId = $"{r.StartDate:yyyyMMdd}-{r.EndDate:yyyyMMdd}-{p}",
+                        StartDate = r.StartDate,
+                        EndDate = r.EndDate,
+                        Days = r.Days,
+                        Location = p
+                    });
+                }
+            }
+
+            return Ok(cards);
         }
     }
 }

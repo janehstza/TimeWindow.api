@@ -1,13 +1,18 @@
-﻿using TimeWindow.api.App.Models;
+﻿using Microsoft.AspNetCore.Mvc.ViewFeatures;
+using System.Security.AccessControl;
+using TimeWindow.api.App.Models;
 
 namespace TimeWindow.api.App.Store
 {
     public class InMemoryStore
     {
-        private List<Group> _groups = new List<Group>();
-        private List<Participant> _participants = new List<Participant>();
-        private List<Preference> _preferences = new List<Preference>();
-        private List<BusySlot> _busySlots = new List<BusySlot>();
+        private List<Group> _groups = new();
+        private List<Participant> _participants = new();
+        private List<Preference> _preferences = new();
+        private List<BusySlot> _busySlots = new();
+        private List<AvailableSlot> _availableSlots = new();
+        private readonly Dictionary<Guid, List<CommonTimeRangeDto>> _commonOptions = new();
+
 
         public Group CreateGroup(int targetCount)
         {
@@ -57,6 +62,11 @@ namespace TimeWindow.api.App.Store
         {
             return _groups.FirstOrDefault(g => g.GroupId == groupid);
         }
+        public Group? GetGroupByInviteCode(string inviteCode)
+        {
+            return _groups.FirstOrDefault(g => g.InviteCode == inviteCode);
+        }
+
         public int GetJoinedCount(Guid groupid)
         {
             return _participants.Count(p => p.GroupId == groupid); ;
@@ -75,11 +85,10 @@ namespace TimeWindow.api.App.Store
         {
             return _preferences.Any(r => r.GroupId == groupId && r.DisplayName == displayName);
         }
-        public bool HasBusyCalendar(Guid groupId, string displayName) 
+        public bool HasBusyCalendar(Guid groupId, string displayName)
         {
-            return _busySlots.Any(s => s.GroupId == groupId && s.DisplayName == displayName); 
+            return _busySlots.Any(s => s.GroupId == groupId && s.DisplayName == displayName);
         }
-        public bool HasSelectedTimeRange(Guid groupId, string displayName) { return false; }
 
         public bool IsSubmitted(Guid groupId, string displayName)
         {
@@ -117,6 +126,11 @@ namespace TimeWindow.api.App.Store
             return pref;
         }
 
+        public List<string> GetDistinctPlacesToGo(Guid groupId)
+        {
+            string raw = String.Join(",", _preferences.Where(d => d.GroupId == groupId).Select(p => p.PlacesToGo));
+            return raw.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length >0).Distinct().ToList();
+        }
         public BusySlot AddBusySlot(Guid groupId, string displayName, DateTime startAt, DateTime endAt)
         {
             var busyslot = new BusySlot();
@@ -136,6 +150,51 @@ namespace TimeWindow.api.App.Store
                                       && s.DisplayName == displayName)
                               .OrderBy(s => s.StartAt).ToList();
 
+        }
+
+        public void SetAvailableSlots(Guid groupId, string displayName, List<AvailableSlot> slots)
+        {
+            _availableSlots ??= new List<AvailableSlot>();
+
+            _availableSlots.RemoveAll(s => s.GroupId == groupId && s.DisplayName == displayName);
+            _availableSlots.AddRange(slots);
+        }
+
+        public List<AvailableSlot> GetAvailableSlots(Guid groupId, string displayName)
+        {
+            return _availableSlots.Where(s => s.GroupId == groupId
+                                      && s.DisplayName == displayName)
+                              .OrderBy(s => s.StartAt).ToList();
+        }
+
+        public IEnumerable<AvailableSlot> GetAvailableSlots(Guid groupId) => _availableSlots.Where(s => s.GroupId == groupId);
+
+
+        public bool HasAvailableSlots(Guid groupId, string displayName)
+        {
+            return _availableSlots.Any(a => a.GroupId == groupId && a.DisplayName == displayName);
+        }
+
+        public void MarkSubmitted(Guid groupId, string displayName)
+        {
+            var p = _participants.FirstOrDefault(x => x.GroupId == groupId && x.DisplayName == displayName);
+            if (p == null) return;
+            p.Submitted = true;
+        }
+
+        public void SaveCommonOptions(Guid groupId, List<CommonTimeRangeDto> options)
+        {
+            _commonOptions[groupId] = options;
+        }
+
+        public List<CommonTimeRangeDto> GetCommonOptionsSnapshot(Guid groupId)
+        {
+           if( !_commonOptions.TryGetValue(groupId, out List<CommonTimeRangeDto> value)) 
+            {
+                return new List<CommonTimeRangeDto>();
+            }
+            
+            return value;
         }
     }
 }
