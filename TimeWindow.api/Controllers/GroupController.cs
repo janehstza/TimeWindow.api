@@ -202,40 +202,69 @@ namespace TimeWindow.api.Controllers
         private List<CommonTimeRangeDto> ComputeCommonOptionsV2(Guid groupId)
         {
             var group = _store.GetGroup(groupId);
+            if (group == null) return new List<CommonTimeRangeDto>();
 
             int n = group.TargetCount;
             int threshold = n / 2 + 1;
             var minDays = group.TravelDays;
 
-
             var slots = _store.GetAvailableSlots(groupId).ToList();
             if (slots.Count == 0) return new List<CommonTimeRangeDto>();
-            var start = DateOnly.FromDateTime(slots.Min(s => s.StartAt));
-            var end = DateOnly.FromDateTime(slots.Max(s => s.EndAt));
 
             var dayCount = new Dictionary<DateOnly, int>();
             foreach (var s in slots)
             {
-                var slotStart = DateOnly.FromDateTime(s.StartAt) < group.DateStart ? group.DateStart : DateOnly.FromDateTime(s.StartAt);
-                var slotEnd = DateOnly.FromDateTime(s.EndAt) > group.DateEnd ? group.DateEnd : DateOnly.FromDateTime(s.EndAt);
+                var sDate = DateOnly.FromDateTime(s.StartAt);
+                var eDate = DateOnly.FromDateTime(s.EndAt);
+
+                var slotStart = sDate < group.DateStart ? group.DateStart : sDate;
+                var slotEnd = eDate > group.DateEnd ? group.DateEnd : eDate;
+
+                if (slotStart > slotEnd) continue;
+
                 for (var d = slotStart; d <= slotEnd; d = d.AddDays(1))
+                {
                     dayCount[d] = dayCount.TryGetValue(d, out var c) ? c + 1 : 1;
+                }
             }
 
-            var goodDays = dayCount.Where(kv => kv.Value >= threshold).Select(kv => kv.Key).OrderBy(d => d).ToList();
+            var goodDays = dayCount.Where(kv => kv.Value >= threshold)
+                                   .Select(kv => kv.Key)
+                                   .OrderBy(d => d)
+                                   .ToList();
+
             var ranges = new List<CommonTimeRangeDto>();
-            for (int i = 0; i < goodDays.Count; i++) 
-            { 
-                var a = goodDays[i]; while (i + 1 < goodDays.Count && 
-                    goodDays[i + 1] == goodDays[i].AddDays(1)) i++;
-                if (goodDays[i].DayNumber - a.DayNumber + 1 >= minDays) ranges.Add(new CommonTimeRangeDto(a, goodDays[i], goodDays[i].DayNumber - a.DayNumber +1));
 
+            for (int i = 0; i < goodDays.Count; i++)
+            {
+                var startDay = goodDays[i];
+                int currentIdx = i;
+                int minAttendance = dayCount[startDay];
+
+                while (currentIdx + 1 < goodDays.Count &&
+                       goodDays[currentIdx + 1] == goodDays[currentIdx].AddDays(1))
+                {
+                    currentIdx++;
+
+                    var countOnThisDay = dayCount[goodDays[currentIdx]];
+                    if (countOnThisDay < minAttendance) minAttendance = countOnThisDay;
+                }
+
+                var endDay = goodDays[currentIdx];
+
+                int duration = endDay.DayNumber - startDay.DayNumber + 1;
+
+                if (duration >= minDays)
+                {
+                    ranges.Add(new CommonTimeRangeDto(startDay, endDay, duration, minAttendance));
+                }
+
+                i = currentIdx;
             }
+
             _store.SaveCommonOptions(groupId, ranges);
             return ranges;
-
         }
-
         [HttpGet("{groupId}/common-options/snapshot")]
         public IActionResult GetSnapshots([FromRoute] Guid groupId, [FromQuery] string? displayName)
         {
